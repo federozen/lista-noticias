@@ -1,0 +1,33 @@
+name: Todos los titulares (sin fotos)
+
+on:
+  schedule:
+    - cron: "10,40 * * * *"   # cada 30 min, se mantiene fresca sola
+  workflow_dispatch: {}       # botón "Run workflow" para generarla a mano
+
+permissions:
+  contents: write             # necesario para poder publicar docs/titulares.html
+
+concurrency:
+  group: titulares-pages
+  cancel-in-progress: false
+
+jobs:
+  titulares:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-vigia.txt
+      - name: Scrapear y generar la página
+        run: python titulares.py --out docs/titulares.html
+      - name: Publicar en GitHub Pages (commitear docs/)
+        run: |
+          git config user.name "titulares-bot"
+          git config user.email "actions@github.com"
+          git add docs/titulares.html
+          git diff --cached --quiet && echo "Sin cambios" || git commit -m "Actualizar titulares $(date -u +%FT%TZ)"
+          git push
