@@ -9,6 +9,10 @@ la app completa. Dos salidas, ambas al mismo tiempo:
      (doble clic), sin servidor, sin fotos — para escanear rápido en el
      celu o la compu.
 
+Orden (modo "por medio", el default): primero "Olé — Últimas noticias"
+(el listado completo de /ultimas-noticias, todo lo publicado), después
+"Olé" a secas (lo que scrapea de la home), y luego el resto de medios.
+
 Opcional: si están cargadas las variables de entorno TELEGRAM_BOT_TOKEN
 y TELEGRAM_CHAT_ID (las mismas que usa vigia.py), también te manda la
 lista completa por Telegram con --telegram.
@@ -29,7 +33,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
-from monitor_core import TODAS_FUENTES, FUENTES_NAC, FUENTES_INT, fetch_fuente
+from monitor_core import TODAS_FUENTES, FUENTES_NAC, FUENTES_INT, fetch_fuente, fetch_ultimas_ole
+
+# Sección especial: el listado completo de /ultimas-noticias de Olé (todo lo
+# publicado, incluso lo que nunca pisa la portada). Va primero en la lista;
+# la portada de Olé (que ya scrapea `fetch_fuente`) queda como segunda sección,
+# porque "ole" es la primera fuente de FUENTES_NAC.
+OLE_ULTIMAS_FUENTE = {"id": "ole_ultimas", "nombre": "Olé — Últimas noticias", "color": "#00a846"}
 
 
 def scrapear_todo(fuentes: list) -> dict:
@@ -217,18 +227,28 @@ def main():
     filtro = args.filtro.strip().lower()
 
     resultados = scrapear_todo(fuentes)
-    imprimir_terminal(fuentes, resultados, filtro, args.az)
+
+    incluir_ultimas = args.ambito in ("todas", "nac")
+    if incluir_ultimas:
+        print("Trayendo Olé — últimas noticias (listado completo, no solo portada)...")
+        resultados["ole_ultimas"] = fetch_ultimas_ole()
+        print(f"  [ole_ultimas  ] {len(resultados['ole_ultimas']):3d} notas")
+        fuentes_render = [OLE_ULTIMAS_FUENTE] + fuentes
+    else:
+        fuentes_render = fuentes
+
+    imprimir_terminal(fuentes_render, resultados, filtro, args.az)
 
     if not args.no_html:
         path = Path(args.out)
         path.parent.mkdir(parents=True, exist_ok=True)
-        total = generar_html(fuentes, resultados, filtro, args.az, path)
+        total = generar_html(fuentes_render, resultados, filtro, args.az, path)
         print(f"\nHTML generado: {path}  ({total} titulares)")
         if args.abrir:
             webbrowser.open(f"file://{path.resolve()}")
 
     if args.telegram:
-        enviar_telegram(fuentes, resultados, filtro)
+        enviar_telegram(fuentes_render, resultados, filtro)
 
 
 if __name__ == "__main__":
