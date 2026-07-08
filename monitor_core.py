@@ -625,7 +625,15 @@ def extraer_rss(xml_text: str) -> list:
             imagen = ""
             if i < len(items_raw):
                 imagen = _extraer_imagen_rss_item(items_raw[i])
-            noticias.append({"titulo": titulo, "url": url, "imagen": imagen})
+            # Hora de publicación (ISO), cuando el feed la trae — permite la
+            # vista "por horario" en titulares.py. Vacío si no se pudo leer.
+            hora_iso = ""
+            if fecha_pub is not None:
+                try:
+                    hora_iso = fecha_pub.isoformat()
+                except Exception:
+                    hora_iso = ""
+            noticias.append({"titulo": titulo, "url": url, "imagen": imagen, "hora": hora_iso})
     except Exception:
         pass
     return noticias[:MAX_ITEMS]

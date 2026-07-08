@@ -1,13 +1,28 @@
 """
-titulares.py — Vista rápida de TODOS los titulares, sin Streamlit y sin fotos.
+titulares.py — Vista rápida de TODOS los titulares, sin Streamlit, CON fotos.
 
 Pensado para chequear de un vistazo qué hay dando vueltas, sin levantar
 la app completa. Dos salidas, ambas al mismo tiempo:
 
   1) Terminal: lista de texto plano, agrupada por medio.
   2) titulares.html: un archivo liviano que se abre solo en el navegador
-     (doble clic), sin servidor, sin fotos — para escanear rápido en el
-     celu o la compu.
+     (doble clic), sin servidor — pensado para escanear rápido en el
+     celu o la compu. Trae dos formas de navegar la misma lista:
+       • Por medio    → agrupado por fuente (como antes).
+       • Por horario  → agrupado por antigüedad de la publicación,
+                        de lo más reciente a lo más viejo.
+
+Sobre las fotos: cada noticia ya trae su propia imagen si el scraper de
+esa fuente la pudo extraer (monitor_core.py). Para las que no, se hace un
+fetch de la og:image de la nota (igual que hace el Streamlit), en
+paralelo y con caché, antes de armar el HTML.
+
+Sobre los horarios: solo los feeds RSS (la mayoría de los medios
+internacionales y varios nacionales vía Google News) traen fecha de
+publicación confiable. Los sitios que se scrapean directo (Olé, ESPN, AS,
+genérico) no siempre la exponen, así que esas notas caen en el bloque
+"Sin horario" dentro de la vista por horario, pero se siguen viendo bien
+en la vista por medio.
 
 Orden (modo "por medio", el default): primero "Olé — Últimas noticias"
 (el listado completo de /ultimas-noticias, todo lo publicado), después
@@ -22,6 +37,7 @@ Uso:
     python titulares.py --filtro boca    # solo titulares que contengan "boca"
     python titulares.py --ambito nac     # solo fuentes nacionales (o --ambito int)
     python titulares.py --az             # orden alfabético en vez de por medio
+    python titulares.py --sin-fotos      # no buscar fotos adicionales (más rápido)
     python titulares.py --telegram       # además, manda la lista por Telegram
     python titulares.py --no-html        # no generar el archivo HTML
 """
@@ -30,10 +46,13 @@ import html as _html
 import sys
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
-from monitor_core import TODAS_FUENTES, FUENTES_NAC, FUENTES_INT, fetch_fuente, fetch_ultimas_ole
+from monitor_core import (
+    TODAS_FUENTES, FUENTES_NAC, FUENTES_INT, fetch_fuente, fetch_ultimas_ole,
+    fetch_og_images_batch, _IMAGE_CACHE,
+)
 
 # Sección especial: el listado completo de /ultimas-noticias de Olé (todo lo
 # publicado, incluso lo que nunca pisa la portada). Va primero en la lista;
@@ -43,7 +62,7 @@ OLE_ULTIMAS_FUENTE = {"id": "ole_ultimas", "nombre": "Olé — Últimas noticias
 
 
 def scrapear_todo(fuentes: list) -> dict:
-    """Trae los titulares de cada fuente en paralelo. Sin imágenes: solo texto."""
+    """Trae los titulares de cada fuente en paralelo."""
     resultados = {}
     total = len(fuentes)
     print(f"Scrapeando {total} fuentes...")
@@ -63,6 +82,25 @@ def scrapear_todo(fuentes: list) -> dict:
             estado = f"{len(noticias):3d} notas" if not error else f"ERROR: {str(error)[:50]}"
             print(f"  [{hechos:2d}/{total}] {f['id']:<14} {estado}")
     return resultados
+
+
+def completar_fotos(fuentes: list, resultados: dict) -> None:
+    """Busca la og:image de las notas que no trajeron imagen del scraping.
+    Corre en paralelo y usa el mismo _IMAGE_CACHE que el Streamlit."""
+    sin_imagen = [
+        n for f in fuentes
+        for n in resultados.get(f["id"], [])
+        if not n.get("imagen") and n.get("url")
+    ]
+    if not sin_imagen:
+        return
+    print(f"Buscando fotos para {len(sin_imagen)} notas sin imagen propia...")
+    fetch_og_images_batch(sin_imagen)
+
+
+def _imagen_de(n: dict) -> str:
+    """Imagen propia del scraping, o la que se haya podido cachear después."""
+    return n.get("imagen") or _IMAGE_CACHE.get(n.get("url", ""), "") or ""
 
 
 def imprimir_terminal(fuentes: list, resultados: dict, filtro: str, az: bool):
@@ -97,44 +135,135 @@ def imprimir_terminal(fuentes: list, resultados: dict, filtro: str, az: bool):
     print(f"Total: {total} titulares" + (f' con "{filtro}"' if filtro else ""))
 
 
-def generar_html(fuentes: list, resultados: dict, filtro: str, az: bool, path: Path) -> int:
-    filas = []
-    total = 0
+# ─── Bucketing por horario ───────────────────────────────────────────────────
+BUCKETS = [
+    ("ultima_hora", "🔴 Última hora", 1),
+    ("1_3h", "🟠 Hace 1–3 horas", 3),
+    ("3_6h", "🟡 Hace 3–6 horas", 6),
+    ("6_12h", "🟢 Hace 6–12 horas", 12),
+    ("mas_12h", "🔵 Hace más de 12 horas", None),
+]
 
-    def fila(n, color=None):
-        titulo = _html.escape(n["titulo"])
-        dot = f'<span style="color:{color};margin-right:6px">●</span>' if color else ""
-        if n.get("url"):
-            return (f'<div class="item">{dot}<a href="{_html.escape(n["url"])}" '
-                     f'target="_blank" rel="noopener">{titulo}</a></div>')
-        return f'<div class="item">{dot}{titulo}</div>'
 
-    if az:
-        planas = []
-        for f in fuentes:
-            for n in resultados.get(f["id"], []):
-                if filtro and filtro not in n["titulo"].lower():
-                    continue
-                planas.append((n, f))
-        planas.sort(key=lambda t: t[0]["titulo"].lower())
-        for n, f in planas:
-            filas.append(fila(n, f["color"]))
-        total = len(planas)
-    else:
-        for f in fuentes:
-            noticias = [
-                n for n in resultados.get(f["id"], [])
-                if not filtro or filtro in n["titulo"].lower()
-            ]
-            if not noticias:
+def _parsear_hora(hora_iso: str):
+    if not hora_iso:
+        return None
+    try:
+        dt = datetime.fromisoformat(hora_iso)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
+def armar_items_planos(fuentes: list, resultados: dict, filtro: str) -> list:
+    """Lista plana de (noticia, fuente) respetando el orden de `fuentes`."""
+    items = []
+    for f in fuentes:
+        for n in resultados.get(f["id"], []):
+            if filtro and filtro not in n["titulo"].lower():
                 continue
-            filas.append(
+            items.append((n, f))
+    return items
+
+
+def agrupar_por_horario(items: list) -> list:
+    """Devuelve [(etiqueta_bucket, [(noticia, fuente, dt_o_None), ...]), ...]
+    ordenado de más reciente a más viejo; el bucket sin hora va al final."""
+    ahora = datetime.now(timezone.utc)
+    con_hora, sin_hora = [], []
+    for n, f in items:
+        dt = _parsear_hora(n.get("hora", ""))
+        if dt is None:
+            sin_hora.append((n, f, None))
+        else:
+            con_hora.append((n, f, dt))
+    con_hora.sort(key=lambda t: t[2], reverse=True)
+
+    grupos = {clave: [] for clave, _, _ in BUCKETS}
+    for n, f, dt in con_hora:
+        horas = (ahora - dt).total_seconds() / 3600
+        asignado = False
+        for clave, _, limite in BUCKETS:
+            if limite is None or horas <= limite:
+                grupos[clave].append((n, f, dt))
+                asignado = True
+                break
+        if not asignado:
+            grupos["mas_12h"].append((n, f, dt))
+
+    salida = [(etq, grupos[clave]) for clave, etq, _ in BUCKETS if grupos[clave]]
+    if sin_hora:
+        salida.append(("⚪ Sin horario disponible", sin_hora))
+    return salida
+
+
+# ─── Render de un ítem (con miniatura) ───────────────────────────────────────
+def _fila_html(n: dict, f: dict, mostrar_medio: bool, hora_dt=None) -> str:
+    titulo = _html.escape(n["titulo"])
+    img = _imagen_de(n)
+    img_html = (
+        f'<img src="{_html.escape(img)}" loading="lazy" '
+        f'onerror="this.style.display=\'none\';this.parentElement.classList.add(\'noimg\')">'
+    ) if img else ""
+    thumb_cls = "thumb" if img else "thumb noimg"
+
+    medio_html = ""
+    if mostrar_medio:
+        medio_html = f'<span class="src" style="color:{f["color"]}">{_html.escape(f["nombre"])}</span> · '
+
+    hora_html = ""
+    if hora_dt is not None:
+        hora_html = f'<span class="hora">{hora_dt.astimezone().strftime("%d/%m %H:%M")}</span>'
+
+    if n.get("url"):
+        link = (f'<a href="{_html.escape(n["url"])}" target="_blank" '
+                f'rel="noopener">{titulo}</a>')
+    else:
+        link = titulo
+
+    return (
+        f'<div class="item">'
+        f'<div class="{thumb_cls}">{img_html}</div>'
+        f'<div class="txt">{medio_html}{hora_html}<br>{link}</div>'
+        f'</div>'
+    )
+
+
+def generar_html(fuentes: list, resultados: dict, filtro: str, az: bool, path: Path) -> int:
+    items = armar_items_planos(fuentes, resultados, filtro)
+    total = len(items)
+
+    # ── Vista "por medio" ──
+    if az:
+        planas = sorted(items, key=lambda t: t[0]["titulo"].lower())
+        filas_medio = [_fila_html(n, f, mostrar_medio=True) for n, f in planas]
+    else:
+        filas_medio = []
+        por_fuente = {}
+        for n, f in items:
+            por_fuente.setdefault(f["id"], []).append((n, f))
+        for f in fuentes:
+            grupo = por_fuente.get(f["id"], [])
+            if not grupo:
+                continue
+            filas_medio.append(
                 f'<div class="medio" style="color:{f["color"]}">{_html.escape(f["nombre"])} '
-                f'<span class="cant">({len(noticias)})</span></div>'
+                f'<span class="cant">({len(grupo)})</span></div>'
             )
-            for n in noticias:
-                filas.append(fila(n))
-            total += len(noticias)
+            for n, _f in grupo:
+                filas_medio.append(_fila_html(n, f, mostrar_medio=False))
+
+    # ── Vista "por horario" ──
+    grupos_horario = agrupar_por_horario(items)
+    filas_horario = []
+    for etiqueta, grupo in grupos_horario:
+        filas_horario.append(
+            f'<div class="medio horario-tag">{etiqueta} <span class="cant">({len(grupo)})</span></div>'
+        )
+        for n, f, dt in grupo:
+            filas_horario.append(_fila_html(n, f, mostrar_medio=True, hora_dt=dt))
 
     ahora = datetime.now().strftime("%d/%m %H:%M")
     doc = f"""<!doctype html>
@@ -142,30 +271,59 @@ def generar_html(fuentes: list, resultados: dict, filtro: str, az: bool, path: P
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Todos los titulares — {ahora}</title>
 <style>
-  body {{ font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 720px;
+  body {{ font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 760px;
          margin: 0 auto; padding: 16px; color: #14171a; background:#fff; }}
   h1 {{ font-size: 18px; margin-bottom: 2px; }}
   .meta {{ color:#657786; font-size:13px; margin-bottom:14px; }}
+  .tabs {{ display:flex; gap:8px; margin-bottom:10px; }}
+  .tab-btn {{ flex:1; padding:8px; font-size:14px; font-weight:600; border:1px solid #ccc;
+             background:#f5f6f7; border-radius:6px; cursor:pointer; color:#14171a; }}
+  .tab-btn.active {{ background:#14171a; color:#fff; border-color:#14171a; }}
   .medio {{ font-weight:800; font-size:12px; letter-spacing:.5px; text-transform:uppercase;
            margin-top:16px; }}
+  .horario-tag {{ font-size:13px; }}
   .cant {{ color:#657786; font-weight:400; }}
-  .item {{ padding:3px 0; border-bottom:1px solid #eee; font-size:15px; line-height:1.4; }}
-  .item a {{ color:#14171a; text-decoration:none; }}
-  .item a:hover {{ text-decoration:underline; }}
+  .item {{ display:flex; gap:10px; align-items:flex-start; padding:7px 0;
+          border-bottom:1px solid #eee; }}
+  .thumb {{ flex-shrink:0; width:56px; height:56px; border-radius:6px; background:#eef0f5;
+           overflow:hidden; display:flex; align-items:center; justify-content:center; }}
+  .thumb img {{ width:100%; height:100%; object-fit:cover; display:block; }}
+  .thumb.noimg::after {{ content:"⚽"; font-size:20px; }}
+  .txt {{ font-size:15px; line-height:1.4; }}
+  .txt a {{ color:#14171a; text-decoration:none; }}
+  .txt a:hover {{ text-decoration:underline; }}
+  .src {{ font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; }}
+  .hora {{ font-size:11px; color:#657786; }}
   input {{ width:100%; padding:8px; font-size:15px; margin-bottom:10px;
           border:1px solid #ccc; border-radius:6px; box-sizing:border-box; }}
+  .view {{ display:none; }}
+  .view.active {{ display:block; }}
 </style></head>
 <body>
   <h1>📋 Todos los titulares</h1>
   <div class="meta">{total} titulares · generado {ahora}</div>
+  <div class="tabs">
+    <button class="tab-btn active" id="tab-medio" onclick="mostrarVista('medio')">📌 Por medio</button>
+    <button class="tab-btn" id="tab-horario" onclick="mostrarVista('horario')">🕒 Por horario</button>
+  </div>
   <input id="q" placeholder="Filtrar en esta lista..." oninput="filtrar()">
-  <div id="lista">
-    {''.join(filas)}
+  <div id="view-medio" class="view active">
+    {''.join(filas_medio)}
+  </div>
+  <div id="view-horario" class="view">
+    {''.join(filas_horario)}
   </div>
   <script>
+    function mostrarVista(v) {{
+      document.querySelectorAll('.view').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+      document.getElementById('view-' + v).classList.add('active');
+      document.getElementById('tab-' + v).classList.add('active');
+      filtrar();
+    }}
     function filtrar() {{
       const q = document.getElementById('q').value.toLowerCase();
-      document.querySelectorAll('#lista .item').forEach(el => {{
+      document.querySelectorAll('.view.active .item').forEach(el => {{
         el.style.display = el.textContent.toLowerCase().includes(q) ? '' : 'none';
       }});
     }}
@@ -215,6 +373,8 @@ def main():
     ap.add_argument("--filtro", default="", help="Filtrar titulares por palabra")
     ap.add_argument("--ambito", choices=["todas", "nac", "int"], default="todas")
     ap.add_argument("--az", action="store_true", help="Orden alfabético en vez de por medio")
+    ap.add_argument("--sin-fotos", action="store_true",
+                     help="No buscar og:image adicional (más rápido, menos fotos)")
     ap.add_argument("--telegram", action="store_true", help="Enviar la lista por Telegram")
     ap.add_argument("--no-html", action="store_true", help="No generar titulares.html")
     ap.add_argument("--out", default="titulares.html", help="Ruta del archivo HTML de salida")
@@ -236,6 +396,9 @@ def main():
         fuentes_render = [OLE_ULTIMAS_FUENTE] + fuentes
     else:
         fuentes_render = fuentes
+
+    if not args.sin_fotos and not args.no_html:
+        completar_fotos(fuentes_render, resultados)
 
     imprimir_terminal(fuentes_render, resultados, filtro, args.az)
 
