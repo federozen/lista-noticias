@@ -1,4 +1,4 @@
-name: Todos los titulares (sin fotos)
+name: Todos los titulares
 
 on:
   schedule:
@@ -15,7 +15,7 @@ concurrency:
 jobs:
   titulares:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 18
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -23,7 +23,7 @@ jobs:
           python-version: "3.12"
       - run: pip install -r requirements-vigia.txt
       - name: Scrapear y generar la página
-        run: python titulares.py --out docs/titulares.html
+        run: python titulares.py --out docs/titulares.html --max-fotos 150
       - name: Publicar en GitHub Pages (commitear docs/)
         run: |
           git config user.name "titulares-bot"
