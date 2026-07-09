@@ -280,20 +280,25 @@ def generar_html(fuentes: list, resultados: dict, filtro: str, az: bool, path: P
              background:#f5f6f7; border-radius:6px; cursor:pointer; color:#14171a; }}
   .tab-btn.active {{ background:#14171a; color:#fff; border-color:#14171a; }}
   .medio {{ font-weight:800; font-size:12px; letter-spacing:.5px; text-transform:uppercase;
-           margin-top:16px; }}
+           margin-top:18px; margin-bottom:8px; }}
   .horario-tag {{ font-size:13px; }}
   .cant {{ color:#657786; font-weight:400; }}
-  .item {{ display:flex; gap:10px; align-items:flex-start; padding:7px 0;
-          border-bottom:1px solid #eee; }}
-  .thumb {{ flex-shrink:0; width:56px; height:56px; border-radius:6px; background:#eef0f5;
+  .item {{ display:flex; align-items:stretch; background:#fff; border:1px solid #e6e8eb;
+          border-radius:12px; overflow:hidden; margin-bottom:10px; }}
+  .thumb {{ flex-shrink:0; width:110px; height:110px; background:#eef0f5;
            overflow:hidden; display:flex; align-items:center; justify-content:center; }}
   .thumb img {{ width:100%; height:100%; object-fit:cover; display:block; }}
-  .thumb.noimg::after {{ content:"⚽"; font-size:20px; }}
-  .txt {{ font-size:15px; line-height:1.4; }}
+  .thumb.noimg::after {{ content:"⚽"; font-size:28px; }}
+  .txt {{ font-size:15px; line-height:1.35; padding:10px 12px; display:flex;
+         flex-direction:column; justify-content:center; }}
   .txt a {{ color:#14171a; text-decoration:none; }}
   .txt a:hover {{ text-decoration:underline; }}
   .src {{ font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; }}
   .hora {{ font-size:11px; color:#657786; }}
+  @media (max-width: 420px) {{
+    .thumb {{ width:84px; height:84px; }}
+    .txt {{ font-size:14px; }}
+  }}
   input {{ width:100%; padding:8px; font-size:15px; margin-bottom:10px;
           border:1px solid #ccc; border-radius:6px; box-sizing:border-box; }}
   .view {{ display:none; }}
